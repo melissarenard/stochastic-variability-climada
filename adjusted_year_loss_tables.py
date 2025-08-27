@@ -225,24 +225,25 @@ def compute_loss_catalogue(
 
     return loss_catalogues
 
-def previous_year_observed_losses(
+def previous_period_observed_losses(
     haz: TropCyclone,
     synthetic_start_year: int,
     loss_catalogue: sp.csr_matrix,
     ) -> tuple[sp.csr_matrix, npt.NDArray[np.float64]]:
     """
-    Compute the loss catalogue for the previous year, using the historical hazard data.
+    Compute the loss catalogue for the previous 6 months, using the historical hazard data.
     This is used to for the consecutive loss adjustment during the first synthetic year.
     """
-    start = dt.date.toordinal(dt.date(synthetic_start_year-2, 8, 1))
+    start = dt.date.toordinal(dt.date(synthetic_start_year-1, 2, 1))
     end = dt.date.toordinal(dt.date(synthetic_start_year-1, 8, 1))
+    end_1yr_bf = dt.date.toordinal(dt.date(synthetic_start_year-2, 8, 1))
     mask = (start <= haz.date) & (haz.date < end) & haz.orig
     previous_losses = loss_catalogue[mask, :].copy().tocsr()
 
-    # Also get the dates of the previous year events, and convert them.
+    # Also get the dates of the previous 6 months events, and convert them.
     # Make Aug 1 of the previous year become -1 and Aug 1 of this year be 0.
-    previous_times = (haz.date[mask] - start) / (end - start)  # Normalize to [0, 1)
-    previous_times -= 1  # Shift to [-1, 0)
+    previous_times = (haz.date[mask] - end_1yr_bf) / (end - end_1yr_bf)  # Normalize to [0, 1) --- will be in [0.5, 1)
+    previous_times -= 1  # Shift to [-1, 0) --- will be in [-0.5, 0)
 
     # Sort the losses and times by the event time
     order = np.argsort(previous_times)
@@ -950,7 +951,7 @@ def generate_year_loss_tables(
     synthetic_start_year=2024,
     regions: Optional[pd.Series] = None,
     region_thresholds: dict[str, float] = {},
-    compound_factor = 1.5,
+    compound_factor = 1.2,
     batch_size=10_000,
     output_dir="Outputs",
     save_large_losses=True,
@@ -967,7 +968,7 @@ def generate_year_loss_tables(
     base_filename = f"{homogeneous}_{n_sim}_{n_years}_{loc}_{p_loc}_{intensity}_{damage}"
 
     if damage:
-        previous_losses, previous_times = previous_year_observed_losses(haz, synthetic_start_year, loss_catalogues["No adjustment"])
+        previous_losses, previous_times = previous_period_observed_losses(haz, synthetic_start_year, loss_catalogues["No adjustment"])
 
     print(f"{base_filename}: 1/5) Simulating ENSO time series", flush=True)
     enso_simulations: npt.NDArray[np.uint8] = simulate_enso_time_series(
