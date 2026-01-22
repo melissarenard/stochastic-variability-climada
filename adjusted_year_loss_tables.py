@@ -310,7 +310,7 @@ def simulate_number_of_cyclones(
     n_years
         Number of years per simulation.
     poisson_params
-        MMNHPP parameters of shape (len(basins), 3, 4).
+        MMNHPP parameters of shape (len(basins), 6).
     basins
         list of basin names.
     enso_simulations
@@ -447,22 +447,21 @@ def sample_synthetic_cyclones(
 
 def get_poisson_parameters(haz: TropCyclone, basins: list[str], homogeneous: bool) -> npt.NDArray[np.float64]:
     """
-    Load MMNHPP parameters and return as array of shape (len(basins), 3, 4).
+    Load MMNHPP parameters and return as array of shape (len(basins), 6).
     """
-    params = np.zeros((len(basins), 3, 4)) # (basin, enso, param)
+    params = np.zeros((len(basins), 6)) # (basin, params)
    
     if homogeneous:
         haz_basin = np.array(haz.basin)
         for b, basin in enumerate(basins):
             lambda_for_basin = haz.frequency[haz_basin == basin].sum()
-            params[b, :, 0] = lambda_for_basin
+            params[b, 0] = lambda_for_basin   # store λ in column 0
         return params
-
-    par_df = pd.read_csv("R tables/MMNHPP_par.csv")
+    
+    par_df = pd.read_csv("R tables/LuGarrido2006params.csv")
 
     for b, basin in enumerate(basins):
-        for e, enso in enumerate(ENSO_PHASES):
-            params[b, e, :] = par_df.loc[par_df['enso'] == enso, basin].values
+        params[b, :] = par_df[basin].values
 
     # However, not all cyclones hit Australia, so we scale the parameters
     # by the proportion of cyclones that hit Australia.
@@ -474,13 +473,14 @@ def get_poisson_parameters(haz: TropCyclone, basins: list[str], homogeneous: boo
         total_tracks = n_tracks_CLIMADA[basin].values[0]
         scale = n_hist_tracks / total_tracks
     
-        params[b, :, 0] *= scale
-        params[b, :, 1] *= scale
+        params[b, 0] *= scale
+        params[b, 1] *= scale
+        params[b, 2] *= scale
 
     return params
 
 
-def nonhomogeneous_poisson_intensity(t: float, coefs: npt.NDArray[np.float64], south_hemis=False) -> float:
+def nonhomogeneous_poisson_intensity(t: float, coefs: npt.NDArray[np.float64], enso_phase: int, south_hemis=False) -> float:
     """
     Evaluate intensity function lambda(t) from seasonal model.
 
@@ -500,10 +500,26 @@ def nonhomogeneous_poisson_intensity(t: float, coefs: npt.NDArray[np.float64], s
     float
         Value of lambda(t)
     """
+    if (coefs[1] == 0 and coefs[2] == 0 and coefs[3] == 0 and coefs[4] == 0 and coefs[5] == 0):
+        return coefs[0]
+    
     if south_hemis:
-        t += 7 / 12  # August shift
-    lambda_ = coefs[0] + coefs[1] * np.exp(coefs[2] * np.sin(2 * np.pi * t + coefs[3]))
-    return max(lambda_, 0.0)
+        t += 7 / 12
+    risk_level = coefs[enso_phase]
+    p = coefs[3]
+    q = coefs[4]
+    shift_time = coefs[5]/12 - 0.5 / 12
+    t_adjusted = t - shift_time
+    if t_adjusted < 0:
+        t_adjusted += 1
+    elif t_adjusted > 1:
+        t_adjusted -= 1
+
+    j = (p - 1)/(p + q - 2)
+    alpha = 1/(j**(p - 1) * (1 - j)**(q - 1))
+    
+    lambda_ = risk_level * alpha * t_adjusted**(p - 1) * (1 - t_adjusted)**(q - 1)
+    return lambda_
 
 
 def expected_poisson_arrivals(poisson_params: npt.NDArray[np.float64], basins: list[str]) -> npt.NDArray[np.float64]:
@@ -513,7 +529,7 @@ def expected_poisson_arrivals(poisson_params: npt.NDArray[np.float64], basins: l
     Parameters
     ----------
     poisson_params
-        MMNHPP parameters of shape (len(basins), 3, 4).
+        MMNHPP parameters of shape (len(basins), 6).
     basins
         list of basin names.
 
@@ -526,8 +542,8 @@ def expected_poisson_arrivals(poisson_params: npt.NDArray[np.float64], basins: l
     for b_idx, basin in enumerate(basins):
         south_hemis = basin in ['SI', 'SP']
         for enso_idx, _ in enumerate(ENSO_PHASES):
-            coefs = poisson_params[b_idx, enso_idx]
-            lam = integrate.quad(lambda t: nonhomogeneous_poisson_intensity(t, coefs, south_hemis), 0, 1)[0]
+            coefs = poisson_params[b_idx]
+            lam = integrate.quad(lambda t: nonhomogeneous_poisson_intensity(t, coefs, enso_idx, south_hemis), 0, 1)[0]
             mean_yearly_arrivals[b_idx, enso_idx] = lam
     return mean_yearly_arrivals
 
@@ -552,9 +568,9 @@ def maximum_poisson_intensities(params: npt.NDArray[np.float64], basins: list[st
     for b_idx, basin in enumerate(basins):
         south_hemis = basin in ['SI', 'SP']
         for e_idx in range(3):
-            coefs = params[b_idx, e_idx]
+            coefs = params[b_idx]
             result = optimize.minimize_scalar(
-                lambda t: -nonhomogeneous_poisson_intensity(t, coefs, south_hemis),
+                lambda t: -nonhomogeneous_poisson_intensity(t, coefs, e_idx, south_hemis),
                 bounds=(0, 1),
                 method='bounded'
             )
@@ -567,7 +583,8 @@ def sample_poisson_arrivals(
     n_events: int,
     coefs: npt.NDArray[np.float64],
     south_hemis: bool,
-    max_intensity: float
+    max_intensity: float,
+    enso_idx: int
 ) -> npt.NDArray[np.float32]:
     """
     Sample an arrival time from an MMNHPP via rejection sampling.
@@ -594,7 +611,7 @@ def sample_poisson_arrivals(
             x = np.random.uniform(0, 1)
             y = np.random.uniform(0, max_intensity)
 
-            if y < nonhomogeneous_poisson_intensity(x, coefs, south_hemis):
+            if y < nonhomogeneous_poisson_intensity(x, coefs, enso_idx, south_hemis):
                 samples[i] = x
                 break
     return samples
@@ -619,7 +636,7 @@ def simulate_arrival_times_of_cyclones(
     n_years
         Number of years per simulation.
     poisson_params
-        MMNHPP parameters of shape (len(basins), 3, 4).
+        MMNHPP parameters of shape (len(basins), 6).
     basins
         list of basin names.
     enso_simulations
@@ -642,9 +659,9 @@ def simulate_arrival_times_of_cyclones(
 
             for basin_idx, basin in enumerate(basins):
                 n_events = event_numbers[sim_idx, year_idx, basin_idx]
-                coefs = poisson_params[basin_idx, enso_idx]
+                coefs = poisson_params[basin_idx]
                 south_hemis = basin in ['SI', 'SP']
-                times = year_idx + sample_poisson_arrivals(n_events, coefs, south_hemis, max_intensities[basin_idx, enso_idx])
+                times = year_idx + sample_poisson_arrivals(n_events, coefs, south_hemis, max_intensities[basin_idx, enso_idx], enso_idx)
                 times.sort()
 
                 arrival_times[sim_idx, year_idx, basin_idx] = times.astype(np.float32)

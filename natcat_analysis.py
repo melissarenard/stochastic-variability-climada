@@ -85,45 +85,83 @@ def read_cyclone_counts(
 def plot_return_period_curves(
     losses_per_sim: list, 
     legend_labels: dict, 
-    figsize = (9,5),
-    legend = True,
-    fontsize = 12,
+    dataset_colors: dict | None = None,
+    dataset_linestyles: dict | None = None,
+    figsize=(9, 5),
+    legend=True,
+    fontsize=12,
     n_sim=1_000_000, 
     rp=250,
-    savefig = False,
+    savefig=False,
+    save_dir=None,
+    y_limit=None
 ):
+
+    XMAX = 250
 
     exceed_freq = np.linspace(1 / n_sim, 1, n_sim)
     return_period = 1 / exceed_freq[::-1]
     max_idx = int((1 - 1 / rp) * n_sim + 1)
 
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = plt.figure(figsize=figsize)
+
+    AX_WIDTH_IN  = 6.0
+    AX_HEIGHT_IN = 4.0
+
+    fig_w, fig_h = fig.get_size_inches()
+
+    ax = fig.add_axes([
+        0.1,                                  
+        0.15,                                 
+        AX_WIDTH_IN / fig_w,                  
+        AX_HEIGHT_IN / fig_h                  
+    ])
+
+    ymax = 0
 
     for loss_per_sim in losses_per_sim:
         sorted_values = np.sort(loss_per_sim)
+        ymax = max(ymax, sorted_values[:max_idx].max())
 
+        label = None
         for key, value in legend_labels.items():
             if np.array_equal(loss_per_sim, value):
                 label = key
+                break
 
-        ax.plot(return_period[:max_idx], sorted_values[:max_idx], label=label)
-
-    ymax = ax.get_ylim()[1]
-    if legend:
-        ax.legend(loc = "center left", fontsize = fontsize, bbox_to_anchor=(1,0.5), ncol=1)
+        color = dataset_colors.get(id(loss_per_sim)) if dataset_colors else None
+        linestyle = dataset_linestyles.get(id(loss_per_sim), "-") if dataset_linestyles else "-"
         
+
+        ax.plot(return_period[:max_idx], sorted_values[:max_idx], label=label, color=color, linestyle=linestyle)
+
+    ax.set_xlim(0, XMAX)
+    if y_limit is None:
+        ax.set_ylim(0, ymax)
+    else:
+        ax.set_ylim(0, y_limit)
+
+    ax.set_xlabel("Return period", fontsize=fontsize)
+    ax.set_ylabel("Loss (USD)", fontsize=fontsize)
+
+    ax.tick_params(axis="both", labelsize=fontsize)
     ax.yaxis.get_offset_text().set_fontsize(fontsize)
-    plt.xlabel("Return period", fontsize = fontsize)
-    plt.ylabel("Loss (USD)", fontsize = fontsize)
-    plt.xlim(0,250)
-    plt.ylim(0, ymax)
-    plt.xticks(fontsize = fontsize)
-    plt.yticks(fontsize = fontsize)
-    # plt.rcParams['font.family'] = 'Arial'
-    plt.tight_layout()
+
+
+    if legend:
+        ax.legend(
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            frameon=False,
+            prop={'family': 'monospace', 'size': fontsize + 2}
+        )
 
     if savefig:
-        plt.savefig(f"Figures/return_period_curve.png", dpi = 300, bbox_inches="tight")
+        plt.savefig(
+            save_dir,
+            dpi=300,
+            bbox_inches="tight"
+        )
 
     return None
 
